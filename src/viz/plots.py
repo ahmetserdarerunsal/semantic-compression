@@ -40,6 +40,23 @@ def overlay_mask(image: np.ndarray, mask: np.ndarray, alpha: float = 0.45) -> np
     return out.astype(np.uint8)
 
 
+def draw_rect_overlay(image: np.ndarray, x0: int, y0: int, x1: int, y1: int,
+                      color: tuple[int, int, int] = (34, 197, 94)) -> np.ndarray:
+    """Manuel ROI dikdörtgenini gerçek piksel koordinatlarında çizer (yeşil,
+    semantik ROI kimliği) — src.roi.bit_allocation.rectangle_mask ile AYNI
+    koordinatlar; dekoratif değil, gerçek sıkıştırma bölgesidir."""
+    import cv2
+
+    out = image.copy()
+    if out.ndim == 2:
+        out = np.stack([out] * 3, axis=-1)
+    h, w = out.shape[:2]
+    x0, x1 = sorted((max(0, min(x0, w - 1)), max(0, min(x1, w - 1))))
+    y0, y1 = sorted((max(0, min(y0, h - 1)), max(0, min(y1, h - 1))))
+    cv2.rectangle(out, (x0, y0), (x1, y1), color, 3)
+    return out
+
+
 def plot_mask_overlay(
     image: np.ndarray, mask: np.ndarray, labels: list[str], out_path: Path
 ) -> None:
@@ -147,27 +164,41 @@ def rd_curve_figure(
     title: str,
     ylabel: str = "PSNR (dB)",
     highlight: dict[str, tuple[float, float]] | None = None,
+    target_bpp: float | None = None,
 ) -> plt.Figure:
     """plot_rd_curves ile aynı görsel dil, ama dosyaya yazmak yerine
     interaktif UI (gr.Plot) için bir Figure döner; isteğe bağlı olarak
     güncel çalışma noktasını (hedef bpp'de gerçekleşen bpp/PSNR) yıldızla
-    işaretler — slider ile teori arasındaki bağı doğrudan gösterir."""
+    işaretler — slider ile teori arasındaki bağı doğrudan gösterir.
+
+    Laboratuvar karanlık temasıyla stillenir (bkz. src/viz/style.py) —
+    yalnız BU fonksiyon; dosyaya yazılan deney raporları (plot_rd_curves)
+    kendi (açık) temasını korur."""
+    from src.viz.style import (ACCENT_CYAN, ACCENT_PURPLE, METHOD_JPEG2000,
+                               TEXT_PLOT, apply_lab_style, style_legend)
+
+    method_colors = [ACCENT_CYAN, ACCENT_PURPLE, METHOD_JPEG2000, "#F59E0B"]
     fig, ax = plt.subplots(figsize=(6.4, 4.4))
     for slot, (label, points) in enumerate(curves.items()):
         pts = sorted(points)
         xs, ys = [p[0] for p in pts], [p[1] for p in pts]
-        color = PALETTE[slot % len(PALETTE)]
+        color = method_colors[slot % len(method_colors)]
         marker = MARKERS[slot % len(MARKERS)]
         ax.plot(xs, ys, color=color, marker=marker, markersize=5,
                 linewidth=1.8, label=label)
         if highlight and label in highlight:
             hx, hy = highlight[label]
-            ax.scatter([hx], [hy], color=color, marker="*", s=220,
-                       edgecolor="black", linewidth=0.8, zorder=5)
+            ax.scatter([hx], [hy], color=color, marker="*", s=260,
+                       edgecolor=TEXT_PLOT, linewidth=1.0, zorder=5)
+    if target_bpp is not None:
+        ax.axvline(target_bpp, color=TEXT_PLOT, linestyle=":", linewidth=1.0, alpha=0.6)
+        ax.annotate(f"HEDEF\n{target_bpp:.2f} bpp", xy=(target_bpp, ax.get_ylim()[0]),
+                   xytext=(4, 6), textcoords="offset points", fontsize=7, color=TEXT_PLOT)
     ax.set_xlabel("bpp (bit / piksel)")
     ax.set_ylabel(ylabel)
     ax.set_title(title, fontsize=10)
-    ax.legend(frameon=False)
+    apply_lab_style(fig, ax)
+    style_legend(ax)
     fig.tight_layout()
     return fig
 

@@ -6,5 +6,10 @@ Pillow>=10.0
 scikit-image>=0.22
 matplotlib>=3.8
 ultralytics>=8.3
+gradio>=4.44
+plotly>=5.24
 # Faz 3 (opsiyonel algısal metrik/restorasyon deneyleri için):
 # lpips>=0.1.4
+
+# Test/doğrulama (tests/test_correctness.py):
+pytest>=8.0

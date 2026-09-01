@@ -12,8 +12,27 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_DIR = PROJECT_ROOT / "data"
 OUTPUT_DIR = PROJECT_ROOT / "outputs"
 
-# Görüntü tipleri -> data/ altındaki alt klasörler
+# Görüntü tipleri -> data/ altındaki alt klasörler (deney betikleri
+# — experiments/*.py — bu listeyi kullanır; her biri data/ altında dolu bir
+# klasör bekler, değiştirilmemeli).
 IMAGE_CATEGORIES = ["natural", "cgi", "mixed"]
+
+# ---------------------------------------------------------------------------
+# UI'daki test görüntü kategorileri: (klasör_adı, görünen_etiket).
+# Yalnız arayüzün örnek galerisi içindir; deney betiklerini ETKİLEMEZ
+# (IMAGE_CATEGORIES ile kasıtlı olarak ayrı tutulur). "classic" klasörü
+# experiments/prepare_classic.py ile üretilir (skimage.data — CC0/BSD).
+#
+# Natural/Hybrid/Synthetic (renkli) kategorileri kaldırıldı — kullanıcı
+# yalnız hocanın referans BPP-PSNR aralığına (grayscale JPEG deneyi)
+# uyan görüntülerin kalmasını istedi. Geriye kalan 9 görüntü ("classic"
+# altında) gerçek libjpeg ile 0.25/0.50/0.75/1.00 bpp'de test edilip
+# referans aralığına (±1.5dB tolerans) uyduğu doğrulanmış, gri tonlamaya
+# çevrilmiş görüntülerdir.
+# ---------------------------------------------------------------------------
+UI_IMAGE_CATEGORIES = [
+    ("classic", "Classic Test Images (Grayscale)"),
+]
 
 # ---------------------------------------------------------------------------
 # DCT motoru (JPEG mantığı)
@@ -62,7 +81,7 @@ WAVELET_LEVELS = 4
 # UI'da (DWT Explorer + karşılaştırma ekranı) seçilebilir dalgacık ailesi
 # listesi. Her biri pywt'de gerçekten mevcut ve wavedec2/waverec2 ile
 # doğrudan çalışır (bkz. src/viz/subbands.filter_bank_info doğrulaması).
-WAVELET_UI_OPTIONS = ["haar", "db2", "db4", "sym4", "coif1", "bior2.2", "bior4.4"]
+WAVELET_UI_OPTIONS = ["haar", "db2", "db4", "db8", "db12", "sym4", "coif1", "bior2.2", "bior4.4"]
 # UI'da izin verilen azami seviye üst sınırı; gerçek üst sınır görüntü
 # boyutu ve seçili dalgacığa göre wavelet_engine.max_decomposition_level
 # ile HER ZAMAN dinamik olarak yeniden hesaplanır (bu yalnız slider tavanıdır).

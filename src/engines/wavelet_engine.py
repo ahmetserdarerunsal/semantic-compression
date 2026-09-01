@@ -24,22 +24,30 @@ from src.engines.dct_engine import _rgb_to_ycbcr, _ycbcr_to_rgb
 from src.engines.entropy import estimate_bits_subband
 
 
-@lru_cache(maxsize=32)
-def _synthesis_gains(wavelet: str, levels: int) -> tuple[tuple[float, ...], ...]:
+#: pywt'nin desteklediği, bu projede seçilebilir kılınan sınır uzatma
+#: (boundary/extension) modları — gerçek pywt.Modes.modes listesinden
+#: (mega-spec "FINAL INTEGRATION" Part 27: "Fake seçenek ekleme").
+BOUNDARY_MODES: tuple[str, ...] = tuple(pywt.Modes.modes)
+DEFAULT_BOUNDARY_MODE = "symmetric"  # önceki (parametrize edilmemiş) davranışla BİREBİR aynı varsayılan
+
+
+@lru_cache(maxsize=64)
+def _synthesis_gains(wavelet: str, levels: int, mode: str = DEFAULT_BOUNDARY_MODE) -> tuple[tuple[float, ...], ...]:
     """Her subband için sentez kazancı: birim katsayının waverec2 sonrası L2 normu.
 
     Dönüş: (LL_kazancı,), sonra her seviye için (LH, HL, HH) kazançları.
-    Bir kez hesaplanıp önbelleklenir (görüntüden bağımsızdır).
+    Bir kez hesaplanıp önbelleklenir (görüntüden bağımsızdır, yalnız
+    wavelet/seviye/sınır moduna bağlıdır).
     """
     size = 2 ** (levels + 4)
     zero = np.zeros((size, size))
-    coeffs = pywt.wavedec2(zero, wavelet, level=levels)
+    coeffs = pywt.wavedec2(zero, wavelet, level=levels, mode=mode)
     gains: list[tuple[float, ...]] = []
 
     # LL bandı
     a = coeffs[0]
     a[a.shape[0] // 2, a.shape[1] // 2] = 1.0
-    gains.append((float(np.linalg.norm(pywt.waverec2(coeffs, wavelet))),))
+    gains.append((float(np.linalg.norm(pywt.waverec2(coeffs, wavelet, mode=mode))),))
     a[a.shape[0] // 2, a.shape[1] // 2] = 0.0
 
     # Detay bantları (kaba seviyeden inceye)
@@ -48,7 +56,7 @@ def _synthesis_gains(wavelet: str, levels: int) -> tuple[tuple[float, ...], ...]
         for bi in range(3):
             d = coeffs[li][bi]
             d[d.shape[0] // 2, d.shape[1] // 2] = 1.0
-            level_gains.append(float(np.linalg.norm(pywt.waverec2(coeffs, wavelet))))
+            level_gains.append(float(np.linalg.norm(pywt.waverec2(coeffs, wavelet, mode=mode))))
             d[d.shape[0] // 2, d.shape[1] // 2] = 0.0
         gains.append(tuple(level_gains))
     return tuple(gains)
@@ -107,7 +115,7 @@ def max_decomposition_level(shape: tuple[int, int], wavelet: str) -> int:
 
 
 def decompose_for_viz(
-    channel: np.ndarray, wavelet: str, levels: int
+    channel: np.ndarray, wavelet: str, levels: int, mode: str = DEFAULT_BOUNDARY_MODE,
 ) -> list[np.ndarray | tuple[np.ndarray, np.ndarray, np.ndarray]]:
     """Sıkıştırma/kuantalama YAPMADAN gerçek DWT katsayılarını döner.
 
@@ -115,8 +123,12 @@ def decompose_for_viz(
     (cH_1,cV_1,cD_1)] — indeks 0 en kaba yaklaşım (LL), sonraki elemanlar
     kaba seviyeden inceye detay bantları. Sadece görselleştirme/inceleme
     içindir; DWT Explorer bu gerçek katsayılar üzerinden çalışır.
+
+    `mode`: pywt'nin GERÇEKTEN desteklediği sınır uzatma modu (bkz.
+    BOUNDARY_MODES) — varsayılan 'symmetric', önceki (parametrize
+    edilmemiş) davranışla BİREBİR aynıdır; geriye dönük uyumluluk bozulmaz.
     """
-    return pywt.wavedec2(channel.astype(np.float64) - 128.0, wavelet, level=levels)
+    return pywt.wavedec2(channel.astype(np.float64) - 128.0, wavelet, level=levels, mode=mode)
 
 
 def compress_channel(
@@ -126,6 +138,7 @@ def compress_channel(
     levels: int = WAVELET_LEVELS,
     importance_mask: np.ndarray | None = None,
     bg_coarseness: float = 1.0,
+    mode: str = DEFAULT_BOUNDARY_MODE,
 ) -> tuple[np.ndarray, float]:
     """Tek kanalı DWT ile sıkıştırıp geri açar; (rekonstrüksiyon, bit) döner.
 
@@ -135,8 +148,8 @@ def compress_channel(
     """
     h, w = channel.shape
     levels = min(levels, max_decomposition_level((h, w), wavelet))
-    coeffs = pywt.wavedec2(channel.astype(np.float64) - 128.0, wavelet, level=levels)
-    gains = _synthesis_gains(wavelet, levels)
+    coeffs = pywt.wavedec2(channel.astype(np.float64) - 128.0, wavelet, level=levels, mode=mode)
+    gains = _synthesis_gains(wavelet, levels, mode)
 
     total_bits = 0.0
     # LL bandı: ince adım, ROI uygulanmaz (katsayı sayısı ve bit payı çok
@@ -157,8 +170,37 @@ def compress_channel(
             total_bits += bits
         new_coeffs.append(tuple(bands))
 
-    recon = pywt.waverec2(new_coeffs, wavelet)[:h, :w] + 128.0
+    recon = pywt.waverec2(new_coeffs, wavelet, mode=mode)[:h, :w] + 128.0
     return np.clip(recon, 0.0, 255.0), total_bits
+
+
+def quantize_for_viz(
+    channel: np.ndarray, base_step: float, wavelet: str, levels: int, mode: str = DEFAULT_BOUNDARY_MODE,
+) -> list:
+    """compress_channel ile AYNI kuantalama adımlarını uygular ama dequantize
+    edilmiş katsayılar yerine tam sayı KUANTALANMIŞ katsayı dizisini döner
+    (pywt yapısıyla aynı: [q_LL, (q_LH1,q_HL1,q_HH1), ...]).
+
+    Yalnız DWT Explorer'daki "kuantalama sonrası seyreklik" istatistiği
+    içindir — sıkıştırma yolunu (compress_channel) DEĞİŞTİRMEZ, aynı iç
+    yardımcıları (_synthesis_gains, _quantize_band) tekrar kullanır.
+    """
+    h, w = channel.shape
+    levels = min(levels, max_decomposition_level((h, w), wavelet))
+    coeffs = pywt.wavedec2(channel.astype(np.float64) - 128.0, wavelet, level=levels, mode=mode)
+    gains = _synthesis_gains(wavelet, levels, mode)
+
+    ll_step = base_step / gains[0][0]
+    q_ll, _, _ = _quantize_band(coeffs[0], ll_step, None, 1.0)
+    quantized = [q_ll]
+    for li in range(1, levels + 1):
+        bands = []
+        for bi in range(3):
+            step_b = base_step / gains[li][bi]
+            q, _, _ = _quantize_band(coeffs[li][bi], step_b, None, 1.0)
+            bands.append(q)
+        quantized.append(tuple(bands))
+    return quantized
 
 
 def compress_image(
@@ -168,6 +210,7 @@ def compress_image(
     levels: int = WAVELET_LEVELS,
     importance_mask: np.ndarray | None = None,
     bg_coarseness: float = 1.0,
+    mode: str = DEFAULT_BOUNDARY_MODE,
 ) -> tuple[np.ndarray, float]:
     """Gri veya RGB görüntüyü sıkıştırıp geri açar; (rekonstrüksiyon, bpp) döner.
 
@@ -178,7 +221,7 @@ def compress_image(
     h, w = image.shape[:2]
     if image.ndim == 2:
         recon, bits = compress_channel(
-            image, base_step, wavelet, levels, importance_mask, bg_coarseness
+            image, base_step, wavelet, levels, importance_mask, bg_coarseness, mode
         )
         return recon.astype(np.uint8), bits / (h * w)
 
@@ -188,7 +231,7 @@ def compress_image(
     for c in range(3):
         step_c = base_step if c == 0 else base_step * 2.0
         out[:, :, c], bits = compress_channel(
-            ycbcr[:, :, c], step_c, wavelet, levels, importance_mask, bg_coarseness
+            ycbcr[:, :, c], step_c, wavelet, levels, importance_mask, bg_coarseness, mode
         )
         total_bits += bits
     rgb = _ycbcr_to_rgb(out)

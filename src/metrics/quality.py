@@ -42,9 +42,25 @@ def psnr(reference: np.ndarray, test: np.ndarray, mask: np.ndarray | None = None
 
 
 def ssim(reference: np.ndarray, test: np.ndarray, mask: np.ndarray | None = None) -> float:
-    """SSIM. mask verilirse SSIM haritasının maske üzerindeki ortalaması."""
+    """SSIM. mask verilirse SSIM haritasının maske üzerindeki ortalaması.
+
+    GERÇEK BUG DÜZELTMESİ ("FINAL MATHEMATICAL VALIDATION & AUDIT"):
+    skimage'ın `structural_similarity(..., full=True)` çağrısı
+    `(mssim, S)` döner; `mssim` kütüphanenin KENDİSİNİN "SSIM skoru" olarak
+    tanımladığı kanonik değerdir (kayan pencerenin tam oturduğu iç bölge
+    üzerinden ortalanır), `S` ise KENAR pikselleri için farklı/daha az
+    güvenilir değerler içeren TAM-BOYUTLU haritadır. Önceden burada
+    (mask=None durumunda, yani DCT/DWT/Compare ekranlarındaki TÜM global
+    SSIM değerleri) `smap.mean()` kullanılıyordu — bu, skimage'ın kendi
+    "SSIM" tanımıyla AYNI DEĞİL: gerçek astronaut görüntüsünde ~1e-4
+    mertebesinde (gösterilen 4 ondalık hassasiyetin tam sınırında) sistematik
+    bir sapma yaratıyordu (bağımsız doğrulama script'iyle ölçüldü). Artık
+    mask=None iken skimage'ın döndürdüğü kanonik `mssim` DOĞRUDAN kullanılır;
+    yalnız maskeli (foreground/background) ortalama için `full=True`'nun
+    uzamsal haritası GEREKLİDİR (bir alt-kümenin ortalaması kütüphanenin
+    tek-sayı API'siyle alınamaz), o durumda hâlâ `smap` kullanılır."""
     multichannel = reference.ndim == 3
-    _, smap = structural_similarity(
+    mssim, smap = structural_similarity(
         reference,
         test,
         data_range=255,
@@ -52,11 +68,14 @@ def ssim(reference: np.ndarray, test: np.ndarray, mask: np.ndarray | None = None
         full=True,
     )
     if mask is None:
-        return float(smap.mean())
+        return float(mssim)
     m = mask.astype(bool)
-    if smap.ndim == 3:
-        return float(smap[m].mean())
-    return float(smap[m].mean())
+    selected = smap[m]
+    # Boş bölge (maske bu tarafta hiç piksel içermiyor, ör. ROI tüm
+    # görüntüyü kaplayınca arka plan boş kalır) -> tanımsız, NaN; numpy'nin
+    # "Mean of empty slice" uyarısını burada AÇIKÇA ele alarak önleriz
+    # (mse() ile aynı desen — bkz. yukarısı).
+    return float(selected.mean()) if selected.size else float("nan")
 
 
 def evaluate(
@@ -68,17 +87,30 @@ def evaluate(
 
     mask: bool piksel maskesi (True = önemli / foreground). None ise yalnız
     global metrikler hesaplanır.
-    """
+
+    ÖNEMLİ (numerical-correctness audit ile bulunan gerçek bug): mask,
+    görüntünün TAMAMINI kaplıyorsa (ör. Manuel ROI'de genişlik/yükseklik
+    slider'ları maksimuma çekilmişse — 512x512 bir görüntüde erişilebilir,
+    ezoterik bir durum değildir) arka plan bölgesi boştur; tersi durumda
+    (maske tamamen boşsa) ön plan boştur. Bu durumda fg/bg anahtarları
+    ÖNCEDEN sessizce sözlükten ÇIKARILIYORDU — çağıran taraf (app.py
+    run_semantic_pipeline) bunları koşulsuz `mb["fg_psnr"]` ile okuduğundan
+    bu KeyError ile ÇÖKÜYORDU. Artık fg/bg anahtarları maske verildiğinde
+    HER ZAMAN mevcuttur; boş bölge durumunda değer NaN'dır (uydurulmuş bir
+    sayı DEĞİL — "bu bölgede ölçülecek piksel yok" anlamına gelir) ve UI
+    katmanı (src/viz/cards.fmt_psnr/fmt_ssim) NaN'ı doğru şekilde "N/A"
+    olarak gösterir (+Inf/"∞ (kayıpsız)" ile KARIŞTIRILMAZ)."""
     out = {
         "psnr": psnr(reference, test),
         "ssim": ssim(reference, test),
     }
-    if mask is not None and mask.any() and (~mask.astype(bool)).any():
+    if mask is not None:
+        m = mask.astype(bool)
         out.update(
-            fg_psnr=psnr(reference, test, mask),
-            bg_psnr=psnr(reference, test, ~mask.astype(bool)),
-            fg_ssim=ssim(reference, test, mask),
-            bg_ssim=ssim(reference, test, ~mask.astype(bool)),
+            fg_psnr=psnr(reference, test, m),
+            bg_psnr=psnr(reference, test, ~m),
+            fg_ssim=ssim(reference, test, m),
+            bg_ssim=ssim(reference, test, ~m),
         )
     return out
 
@@ -144,4 +176,16 @@ def calculate_metrics(
     out["bpp"] = float(bpp)
     out["compression_ratio"] = compression_ratio(original.shape, total_bits)
     out["compressed_size_bytes"] = total_bits / 8.0
+    # "Orijinal boyut" burada HAM GÖRÜNTÜ boyutudur (H*W*kanal*8 bit,
+    # bkz. raw_bits) — YÜKLENEN DOSYANIN disk boyutu DEĞİLDİR (PNG/JPEG
+    # kapsayıcı sıkıştırması projenin transform/kuantalama pipeline'ıyla
+    # ilgisizdir). compression_ratio ZATEN aynı tanımı (raw_bits) paydası
+    # olarak kullanıyor — bu yüzden size_reduction_pct, compression_ratio
+    # ile MATEMATİKSEL OLARAK TUTARLIDIR (elma-elma karşılaştırma, mega-spec
+    # "FINAL FEATURE PASS" Part 6/7/8): reduction = 100*(1 - 1/ratio).
+    out["original_size_bytes"] = raw_bits(original.shape) / 8.0
+    out["size_reduction_pct"] = (
+        100.0 * (1.0 - out["compressed_size_bytes"] / out["original_size_bytes"])
+        if out["original_size_bytes"] > 0 else float("nan")
+    )
     return out

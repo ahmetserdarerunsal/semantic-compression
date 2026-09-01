@@ -25,6 +25,22 @@ from config import (
 EncodeFn = Callable[[float], tuple[np.ndarray, float]]
 
 
+def rectangle_mask(shape: tuple[int, int], x0: int, y0: int, x1: int, y1: int) -> np.ndarray:
+    """Manuel ROI için dikdörtgen bool piksel maskesi.
+
+    YOLO tabanlı get_importance_mask ile AYNI arayüze (bool piksel maskesi)
+    uyar — bu sayede manuel ROI, mask_to_block_importance / wavelet
+    importance_mask gibi MEVCUT sıkıştırma yolunu değiştirmeden kullanır
+    (mega-spec: "Manuel ROI gerçek compression pipeline'ına bağlanmalı").
+    """
+    h, w = shape
+    x0, x1 = sorted((max(0, min(x0, w)), max(0, min(x1, w))))
+    y0, y1 = sorted((max(0, min(y0, h)), max(0, min(y1, h))))
+    mask = np.zeros(shape, dtype=bool)
+    mask[y0:y1, x0:x1] = True
+    return mask
+
+
 def mask_to_block_importance(
     mask: np.ndarray,
     block: int = DCT_BLOCK_SIZE,
